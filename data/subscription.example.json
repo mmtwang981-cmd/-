@@ -1,0 +1,9 @@
+{
+  "recipientEmail": "wife@example.com",
+  "city": "上海",
+  "sendTime": "08:00",
+  "tone": "克制高级",
+  "wifePersona": "LVMH 和 Tiffany 从业者，做过珠宝创业，有艺术背景，对审美、材质、细节和品牌叙事敏感。",
+  "userPersona": "智能驾驶产品经理，关心技术趋势、产品判断与复杂系统，表达理性但希望保留温度。",
+  "constraints": "结合天气与重点新闻的情绪，但不要直接照搬标题；像真实伴侣会说的话；不油腻，不像营销文案，结尾带一点生活关心。"
+}

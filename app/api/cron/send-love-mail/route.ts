@@ -1,0 +1,55 @@
+import { NextRequest, NextResponse } from "next/server";
+import {
+  readStoredSubscription,
+  sendLoveMail,
+  shouldSendAtCurrentTime,
+} from "@/lib/morning-love-mail";
+
+export async function GET(req: NextRequest) {
+  try {
+    const authHeader = req.headers.get("authorization");
+    const expected = `Bearer ${process.env.CRON_SECRET}`;
+    const isProd = process.env.NODE_ENV === "production";
+
+    if (isProd && authHeader !== expected) {
+      return NextResponse.json(
+        { ok: false, error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const subscription = await readStoredSubscription();
+
+    if (!subscription) {
+      return NextResponse.json(
+        { ok: false, error: "No saved subscription found" },
+        { status: 404 }
+      );
+    }
+
+    if (!shouldSendAtCurrentTime(subscription.sendTime)) {
+      return NextResponse.json({
+        ok: true,
+        skipped: true,
+        reason: "Outside configured send time",
+        sendTime: subscription.sendTime,
+      });
+    }
+
+    const result = await sendLoveMail(subscription);
+
+    if (!result.ok) {
+      return NextResponse.json(result, {
+        status: result.providerError?.statusCode ?? 502,
+      });
+    }
+
+    return NextResponse.json(result);
+  } catch (error) {
+    console.error("cron send failed:", error);
+    return NextResponse.json(
+      { ok: false, error: "Send failed" },
+      { status: 500 }
+    );
+  }
+}
