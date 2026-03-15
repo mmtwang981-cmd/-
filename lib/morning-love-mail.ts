@@ -29,6 +29,39 @@ export type LoveLineContext = {
   loveLine: string;
 };
 
+export type GenerationLogEntry = {
+  id: string;
+  trigger: "preview" | "manual" | "scheduled";
+  generatedAt: string;
+  city: string;
+  tone: string;
+  weather: string;
+  newsSummary: string[];
+  loveLine: string;
+  recipientEmail: string;
+  generationMode: "openai" | "fallback";
+};
+
+export type SendLogEntry = {
+  id: string;
+  trigger: "manual" | "scheduled";
+  sentAt: string;
+  recipientEmail: string;
+  city: string;
+  subject: string;
+  weather: string;
+  loveLine: string;
+  simulated: boolean;
+  ok: boolean;
+  provider?: string;
+  providerMessage?: string;
+};
+
+export type ActivityLog = {
+  generationLogs: GenerationLogEntry[];
+  sendLogs: SendLogEntry[];
+};
+
 export type SendLoveMailResult = {
   ok: boolean;
   simulated: boolean;
@@ -55,6 +88,8 @@ const subscriptionFilePath = path.join(
 const blobSubscriptionPath = "config/subscription.json";
 const sendStateFilePath = path.join(process.cwd(), "data", "send-state.json");
 const blobSendStatePath = "config/send-state.json";
+const activityLogFilePath = path.join(process.cwd(), "data", "activity-log.json");
+const blobActivityLogPath = "config/activity-log.json";
 
 type SendState = {
   lastSentLocalDate: string | null;
@@ -217,9 +252,23 @@ export async function createGeneratedLoveLine(
 }
 
 export async function sendLoveMail(
-  subscription: Subscription
+  subscription: Subscription,
+  trigger: "manual" | "scheduled"
 ): Promise<SendLoveMailResult> {
-  const context = await createGeneratedLoveLine(subscription);
+  const generated = await createGeneratedLoveLineWithMeta(subscription);
+  const context = generated.context;
+  await appendGenerationLog({
+    trigger,
+    generatedAt: new Date().toISOString(),
+    city: subscription.city,
+    tone: subscription.tone,
+    weather: context.weather,
+    newsSummary: context.newsSummary,
+    loveLine: context.loveLine,
+    recipientEmail: subscription.recipientEmail,
+    generationMode: generated.generationMode,
+  });
+
   const subject = `给你的今日早安 · ${subscription.city}`;
   const html = `
     <div style="font-family: 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif; line-height: 1.8; color: #1f1b16; padding: 24px;">
@@ -234,7 +283,7 @@ export async function sendLoveMail(
   `;
 
   if (!process.env.RESEND_API_KEY || !process.env.MAIL_FROM) {
-    return {
+    const result = {
       ok: true,
       simulated: true,
       sentTo: subscription.recipientEmail,
@@ -244,6 +293,18 @@ export async function sendLoveMail(
       loveLine: context.loveLine,
       html,
     };
+    await appendSendLog({
+      trigger,
+      sentAt: new Date().toISOString(),
+      recipientEmail: subscription.recipientEmail,
+      city: subscription.city,
+      subject,
+      weather: context.weather,
+      loveLine: context.loveLine,
+      simulated: true,
+      ok: true,
+    });
+    return result;
   }
 
   const resend = new Resend(process.env.RESEND_API_KEY);
@@ -255,7 +316,7 @@ export async function sendLoveMail(
   });
 
   if (result.error) {
-    return {
+    const failedResult = {
       ok: false,
       simulated: false,
       sentTo: subscription.recipientEmail,
@@ -267,9 +328,23 @@ export async function sendLoveMail(
       provider: "resend",
       providerError: result.error,
     };
+    await appendSendLog({
+      trigger,
+      sentAt: new Date().toISOString(),
+      recipientEmail: subscription.recipientEmail,
+      city: subscription.city,
+      subject,
+      weather: context.weather,
+      loveLine: context.loveLine,
+      simulated: false,
+      ok: false,
+      provider: "resend",
+      providerMessage: result.error.message,
+    });
+    return failedResult;
   }
 
-  return {
+  const successResult = {
     ok: true,
     simulated: false,
     sentTo: subscription.recipientEmail,
@@ -280,6 +355,64 @@ export async function sendLoveMail(
     html,
     resend: result,
   };
+  await appendSendLog({
+    trigger,
+    sentAt: new Date().toISOString(),
+    recipientEmail: subscription.recipientEmail,
+    city: subscription.city,
+    subject,
+    weather: context.weather,
+    loveLine: context.loveLine,
+    simulated: false,
+    ok: true,
+    provider: "resend",
+  });
+  return successResult;
+}
+
+export async function readActivityLog(): Promise<ActivityLog> {
+  if (isBlobStorageEnabled()) {
+    const result = await get(blobActivityLogPath, {
+      access: "private",
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+    });
+
+    if (!result || result.statusCode !== 200 || !result.stream) {
+      return emptyActivityLog();
+    }
+
+    const raw = await new Response(result.stream).text();
+    return normalizeActivityLog(JSON.parse(raw) as Partial<ActivityLog>);
+  }
+
+  try {
+    const raw = await fs.readFile(activityLogFilePath, "utf-8");
+    return normalizeActivityLog(JSON.parse(raw) as Partial<ActivityLog>);
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") {
+      return emptyActivityLog();
+    }
+
+    throw error;
+  }
+}
+
+export async function recordPreviewGeneration(
+  subscription: Subscription,
+  context: LoveLineContext
+): Promise<void> {
+  await appendGenerationLog({
+    trigger: "preview",
+    generatedAt: new Date().toISOString(),
+    city: subscription.city,
+    tone: subscription.tone,
+    weather: context.weather,
+    newsSummary: context.newsSummary,
+    loveLine: context.loveLine,
+    recipientEmail: subscription.recipientEmail,
+    generationMode: "fallback",
+  });
 }
 
 export async function maybeGenerateWithOpenAI(
@@ -359,6 +492,39 @@ export async function markScheduledSend(now = new Date()): Promise<void> {
 
 function isValidSendTime(sendTime: string): boolean {
   return /^([01]\d|2[0-3]):([0-5]\d)$/.test(sendTime);
+}
+
+async function createGeneratedLoveLineWithMeta(
+  subscription: Subscription
+): Promise<{
+  context: LoveLineContext;
+  generationMode: "openai" | "fallback";
+}> {
+  const context = await buildLoveLineContext(subscription);
+
+  try {
+    const aiLoveLine = await maybeGenerateWithOpenAI(
+      process.env.OPENAI_API_KEY,
+      context.prompt
+    );
+
+    if (aiLoveLine) {
+      return {
+        context: {
+          ...context,
+          loveLine: aiLoveLine,
+        },
+        generationMode: "openai",
+      };
+    }
+  } catch (error) {
+    console.error("OpenAI generation failed, fallback used:", error);
+  }
+
+  return {
+    context,
+    generationMode: "fallback",
+  };
 }
 
 async function getWeatherSummary(city: string): Promise<string> {
@@ -765,6 +931,26 @@ async function saveSendState(state: SendState): Promise<void> {
   await fs.writeFile(sendStateFilePath, JSON.stringify(state, null, 2), "utf-8");
 }
 
+async function saveActivityLog(activityLog: ActivityLog): Promise<void> {
+  if (isBlobStorageEnabled()) {
+    await put(blobActivityLogPath, JSON.stringify(activityLog, null, 2), {
+      access: "private",
+      allowOverwrite: true,
+      addRandomSuffix: false,
+      contentType: "application/json; charset=utf-8",
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+    });
+    return;
+  }
+
+  await fs.mkdir(path.dirname(activityLogFilePath), { recursive: true });
+  await fs.writeFile(
+    activityLogFilePath,
+    JSON.stringify(activityLog, null, 2),
+    "utf-8"
+  );
+}
+
 function emptySendState(): SendState {
   return {
     lastSentLocalDate: null,
@@ -772,10 +958,26 @@ function emptySendState(): SendState {
   };
 }
 
+function emptyActivityLog(): ActivityLog {
+  return {
+    generationLogs: [],
+    sendLogs: [],
+  };
+}
+
 function normalizeSendState(state: Partial<SendState>): SendState {
   return {
     lastSentLocalDate: state.lastSentLocalDate ?? null,
     lastSentAt: state.lastSentAt ?? null,
+  };
+}
+
+function normalizeActivityLog(log: Partial<ActivityLog>): ActivityLog {
+  return {
+    generationLogs: Array.isArray(log.generationLogs)
+      ? log.generationLogs.slice(0, 30)
+      : [],
+    sendLogs: Array.isArray(log.sendLogs) ? log.sendLogs.slice(0, 30) : [],
   };
 }
 
@@ -788,4 +990,42 @@ function getShanghaiLocalDate(now: Date): string {
   });
 
   return formatter.format(now);
+}
+
+async function appendGenerationLog(
+  entry: Omit<GenerationLogEntry, "id">
+): Promise<void> {
+  const activityLog = await readActivityLog();
+  const next: ActivityLog = {
+    ...activityLog,
+    generationLogs: [
+      {
+        id: createLogId("gen"),
+        ...entry,
+      },
+      ...activityLog.generationLogs,
+    ].slice(0, 30),
+  };
+
+  await saveActivityLog(next);
+}
+
+async function appendSendLog(entry: Omit<SendLogEntry, "id">): Promise<void> {
+  const activityLog = await readActivityLog();
+  const next: ActivityLog = {
+    ...activityLog,
+    sendLogs: [
+      {
+        id: createLogId("send"),
+        ...entry,
+      },
+      ...activityLog.sendLogs,
+    ].slice(0, 30),
+  };
+
+  await saveActivityLog(next);
+}
+
+function createLogId(prefix: "gen" | "send"): string {
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }

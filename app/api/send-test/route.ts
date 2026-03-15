@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const result = await sendLoveMail(validated.value);
+    const result = await sendLoveMail(validated.value, "manual");
 
     if (!result.ok) {
       return NextResponse.json(result, {

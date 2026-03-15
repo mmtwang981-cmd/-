@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   buildLoveLineContext,
   defaultSubscription,
+  recordPreviewGeneration,
   validateSubscription,
 } from "@/lib/morning-love-mail";
 
@@ -22,6 +23,7 @@ export async function POST(req: NextRequest) {
     }
 
     const context = await buildLoveLineContext(validated.value);
+    await recordPreviewGeneration(validated.value, context);
 
     return NextResponse.json({
       ok: true,

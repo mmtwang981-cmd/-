@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const result = await sendLoveMail(subscription);
+    const result = await sendLoveMail(subscription, "scheduled");
 
     if (!result.ok) {
       return NextResponse.json(result, {
