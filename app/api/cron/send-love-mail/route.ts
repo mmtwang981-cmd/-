@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  canSendScheduledLoveMail,
+  markScheduledSend,
   readStoredSubscription,
   sendLoveMail,
-  shouldSendAtCurrentTime,
 } from "@/lib/morning-love-mail";
 
 export async function GET(req: NextRequest) {
@@ -27,11 +28,13 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    if (!shouldSendAtCurrentTime(subscription.sendTime)) {
+    const sendCheck = await canSendScheduledLoveMail(subscription.sendTime);
+
+    if (!sendCheck.shouldSend) {
       return NextResponse.json({
         ok: true,
         skipped: true,
-        reason: "Outside configured send time",
+        reason: sendCheck.reason,
         sendTime: subscription.sendTime,
       });
     }
@@ -43,6 +46,8 @@ export async function GET(req: NextRequest) {
         status: result.providerError?.statusCode ?? 502,
       });
     }
+
+    await markScheduledSend();
 
     return NextResponse.json(result);
   } catch (error) {

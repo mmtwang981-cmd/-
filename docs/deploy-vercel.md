@@ -1,9 +1,13 @@
-# Deploy To Vercel
+# Deploy To Vercel Hobby
 
-This project is ready to deploy to Vercel, with one important distinction:
+This project is ready for Vercel Hobby, but it does not use Vercel Cron.
 
-- local development stores the subscription in `data/subscription.json`
-- deployed production stores the subscription in Vercel Blob through `BLOB_READ_WRITE_TOKEN`
+Instead:
+- Vercel hosts the app
+- Vercel Blob stores the subscription in production
+- GitHub Actions calls the cron endpoint every 5 minutes
+
+This avoids the Vercel Hobby cron limitation.
 
 ## Before You Deploy
 
@@ -12,15 +16,20 @@ Make sure you already have:
 - a sender address such as `noreply@yourdomain.com`
 - an OpenAI API key
 - a Vercel account
+- a GitHub repository for this project
 
 Optional but recommended:
 - a `GNEWS_API_KEY` for more stable news results
 
-## 1. Push The Project To GitHub
+## 1. Import The GitHub Repo Into Vercel
 
-Commit the project and push it to a GitHub repository that Vercel can import.
+1. Open Vercel
+2. Click `Add New...` -> `Project`
+3. Import the GitHub repository
+4. Keep the framework preset as `Next.js`
+5. Deploy once
 
-## 2. Create A Blob Store In Vercel
+## 2. Create A Blob Store
 
 In the Vercel dashboard:
 
@@ -28,18 +37,9 @@ In the Vercel dashboard:
 2. Create a new `Blob` store
 3. Connect it to this project
 
-Vercel will inject `BLOB_READ_WRITE_TOKEN` into the project environment variables.
+This gives the project a `BLOB_READ_WRITE_TOKEN`.
 
-## 3. Import The Project Into Vercel
-
-1. Open Vercel
-2. Click `Add New...` -> `Project`
-3. Import the GitHub repository
-4. Keep the framework preset as `Next.js`
-
-No special build command is needed.
-
-## 4. Configure Environment Variables
+## 3. Configure Vercel Environment Variables
 
 In `Project Settings` -> `Environment Variables`, add:
 
@@ -50,46 +50,66 @@ In `Project Settings` -> `Environment Variables`, add:
 - `BLOB_READ_WRITE_TOKEN`
 - `GNEWS_API_KEY` (optional)
 
-Recommended examples:
+Example values:
 
 ```bash
 CRON_SECRET=replace-with-a-long-random-secret
 RESEND_API_KEY=re_xxx
-MAIL_FROM=noreply@yourdomain.com
+MAIL_FROM=noreply@morning-love.xin
 OPENAI_API_KEY=sk-proj-xxx
 BLOB_READ_WRITE_TOKEN=vercel_blob_rw_xxx
 GNEWS_API_KEY=
 ```
 
-## 5. Deploy
+After saving environment variables, redeploy once.
 
-Trigger the first deployment from Vercel. After it succeeds:
+## 4. Add GitHub Repository Secrets
 
-1. open the production URL
-2. save a subscription once from the homepage
-3. use `立即测试发信` to verify real delivery
+Open the GitHub repository:
 
-## 6. Cron Behavior
+`Settings` -> `Secrets and variables` -> `Actions`
 
-This project uses `vercel.json` to trigger:
+Create these secrets:
+
+- `CRON_ENDPOINT_URL`
+  Example: `https://your-project-name.vercel.app`
+- `CRON_SECRET`
+  Use the exact same value as the Vercel environment variable
+
+## 5. Enable GitHub Actions Scheduler
+
+This repository includes:
+
+- `.github/workflows/cron-send-love-mail.yml`
+
+It runs every 5 minutes and calls:
 
 - `/api/cron/send-love-mail`
-- every minute
 
-The server route then checks the saved `sendTime` in Asia/Shanghai and only sends on the matching minute.
+with:
+
+- `Authorization: Bearer $CRON_SECRET`
+
+## 6. Important Scheduling Behavior
+
+Because GitHub Actions runs every 5 minutes:
+
+- the backend accepts a 5-minute send window
+- the backend records send state and only sends once per day
+
+So if the saved send time is `08:03`, the `08:05` GitHub Actions run will still send it.
 
 ## 7. Production Checks
 
-After deployment, verify:
+After deployment:
 
-1. homepage loads
-2. save subscription works
-3. preview works
-4. manual test send works
-5. next scheduled send arrives at the configured time
+1. open the production homepage
+2. save a subscription once
+3. click `立即测试发信`
+4. in GitHub, open `Actions` and manually run `Cron Send Love Mail` once if you want to test the scheduled route
 
 ## Notes
 
-- If `BLOB_READ_WRITE_TOKEN` is missing, deployed changes to the subscription will not persist correctly on Vercel.
+- If `BLOB_READ_WRITE_TOKEN` is missing, production subscription updates will not persist.
 - `MAIL_FROM` must belong to a verified Resend domain.
 - If OpenAI times out, the app falls back to a safe generated line and still sends the email.

@@ -16,7 +16,7 @@ It combines:
 - Tailwind CSS
 - OpenAI API
 - Resend
-- Vercel Cron
+- GitHub Actions cron trigger
 - Local JSON for local development
 - Vercel Blob for deployed persistence
 
@@ -58,6 +58,12 @@ Optional:
 - Generate a preview love line
 - Send a manual test email immediately
 - Send the scheduled morning email through `/api/cron/send-love-mail`
+
+## Scheduling Model
+
+- Local development: you can hit the cron route manually
+- Production on Vercel Hobby: GitHub Actions calls the cron route every 5 minutes
+- The server sends only once per day and accepts a 5-minute window around the configured `sendTime`
 
 ## Deployment
 

@@ -53,6 +53,13 @@ const subscriptionFilePath = path.join(
   "subscription.json"
 );
 const blobSubscriptionPath = "config/subscription.json";
+const sendStateFilePath = path.join(process.cwd(), "data", "send-state.json");
+const blobSendStatePath = "config/send-state.json";
+
+type SendState = {
+  lastSentLocalDate: string | null;
+  lastSentAt: string | null;
+};
 
 const toneTags: Record<string, string> = {
   温柔聪明: "克制温柔",
@@ -297,12 +304,12 @@ export async function maybeGenerateWithOpenAI(
   return text || null;
 }
 
-export function shouldSendAtCurrentTime(
+export async function canSendScheduledLoveMail(
   sendTime: string,
   now = new Date()
-): boolean {
+): Promise<{ shouldSend: boolean; reason?: string }> {
   if (!isValidSendTime(sendTime)) {
-    return false;
+    return { shouldSend: false, reason: "Invalid send time" };
   }
 
   const [hoursText, minutesText] = sendTime.split(":");
@@ -323,7 +330,31 @@ export function shouldSendAtCurrentTime(
     shanghaiParts.find((part) => part.type === "minute")?.value ?? "-1"
   );
 
-  return currentHour === hours && currentMinute === minutes;
+  const currentTotalMinutes = currentHour * 60 + currentMinute;
+  const scheduledTotalMinutes = hours * 60 + minutes;
+  const diff = currentTotalMinutes - scheduledTotalMinutes;
+
+  if (diff < 0 || diff >= 5) {
+    return { shouldSend: false, reason: "Outside configured send window" };
+  }
+
+  const localDate = getShanghaiLocalDate(now);
+  const state = await readSendState();
+
+  if (state.lastSentLocalDate === localDate) {
+    return { shouldSend: false, reason: "Already sent today" };
+  }
+
+  return { shouldSend: true };
+}
+
+export async function markScheduledSend(now = new Date()): Promise<void> {
+  const state: SendState = {
+    lastSentLocalDate: getShanghaiLocalDate(now),
+    lastSentAt: now.toISOString(),
+  };
+
+  await saveSendState(state);
 }
 
 function isValidSendTime(sendTime: string): boolean {
@@ -664,6 +695,34 @@ function isBlobStorageEnabled(): boolean {
   return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 }
 
+async function readSendState(): Promise<SendState> {
+  if (isBlobStorageEnabled()) {
+    const result = await get(blobSendStatePath, {
+      access: "private",
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+    });
+
+    if (!result || result.statusCode !== 200 || !result.stream) {
+      return emptySendState();
+    }
+
+    const raw = await new Response(result.stream).text();
+    return normalizeSendState(JSON.parse(raw) as Partial<SendState>);
+  }
+
+  try {
+    const raw = await fs.readFile(sendStateFilePath, "utf-8");
+    return normalizeSendState(JSON.parse(raw) as Partial<SendState>);
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") {
+      return emptySendState();
+    }
+
+    throw error;
+  }
+}
+
 async function readStoredSubscriptionFromBlob(): Promise<Subscription | null> {
   const result = await get(blobSubscriptionPath, {
     access: "private",
@@ -688,4 +747,45 @@ async function saveSubscriptionToBlob(subscription: Subscription): Promise<void>
     contentType: "application/json; charset=utf-8",
     token: process.env.BLOB_READ_WRITE_TOKEN,
   });
+}
+
+async function saveSendState(state: SendState): Promise<void> {
+  if (isBlobStorageEnabled()) {
+    await put(blobSendStatePath, JSON.stringify(state, null, 2), {
+      access: "private",
+      allowOverwrite: true,
+      addRandomSuffix: false,
+      contentType: "application/json; charset=utf-8",
+      token: process.env.BLOB_READ_WRITE_TOKEN,
+    });
+    return;
+  }
+
+  await fs.mkdir(path.dirname(sendStateFilePath), { recursive: true });
+  await fs.writeFile(sendStateFilePath, JSON.stringify(state, null, 2), "utf-8");
+}
+
+function emptySendState(): SendState {
+  return {
+    lastSentLocalDate: null,
+    lastSentAt: null,
+  };
+}
+
+function normalizeSendState(state: Partial<SendState>): SendState {
+  return {
+    lastSentLocalDate: state.lastSentLocalDate ?? null,
+    lastSentAt: state.lastSentAt ?? null,
+  };
+}
+
+function getShanghaiLocalDate(now: Date): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  return formatter.format(now);
 }

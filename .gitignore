@@ -43,6 +43,7 @@ yarn-error.log*
 
 # local app data
 data/subscription.json
+data/send-state.json
 
 # typescript
 *.tsbuildinfo
